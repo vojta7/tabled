@@ -25,7 +25,8 @@
 use std::{
     cmp::{self, max},
     collections::{BTreeSet, HashMap},
-    fmt,
+    fmt::{self, Display},
+    iter,
     ops::{Bound, RangeBounds},
 };
 
@@ -1026,6 +1027,131 @@ impl std::fmt::Display for Grid {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn print_grid(
+    f: &mut fmt::Formatter,
+    count_rows: usize,
+    cells: Vec<Vec<Vec<String>>>,
+    styles: Vec<Vec<Style>>,
+    widths: Vec<Vec<usize>>,
+    normal_widths: Vec<usize>,
+    row_heights: Vec<usize>,
+    grid: &Grid,
+    total_width: usize,
+) -> Result<(), fmt::Error> {
+    for _ in 0..grid.margin.top.size {
+        repeat_char(f, grid.margin.top.fill, total_width)?;
+        writeln!(f)?;
+    }
+
+    for row in 0..count_rows {
+        build_row(
+            f,
+            &cells[row],
+            &styles[row],
+            &widths[row],
+            &normal_widths,
+            row_heights[row],
+            grid,
+            row,
+        )?;
+    }
+
+    for _ in 0..grid.margin.bottom.size {
+        repeat_char(f, grid.margin.bottom.fill, total_width)?;
+        writeln!(f)?;
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_row(
+    f: &mut std::fmt::Formatter<'_>,
+    cell_contents: &[Vec<String>],
+    cell_styles: &[Style],
+    cell_widths: &[usize],
+    normal_widths: &[usize],
+    height: usize,
+    grid: &Grid,
+    row: usize,
+) -> fmt::Result {
+    if row == 0 {
+        build_split_line_(f, normal_widths, grid, row)?;
+    }
+
+    let inner_border = grid.get_inner_split_line(row);
+    build_row_cells(
+        f,
+        cell_contents,
+        cell_styles,
+        cell_widths,
+        height,
+        &inner_border,
+        &grid.margin,
+    )?;
+
+    build_split_line_(f, normal_widths, grid, row + 1)?;
+
+    Ok(())
+}
+
+fn build_split_line_(
+    f: &mut fmt::Formatter,
+    widths: &[usize],
+    grid: &Grid,
+    row: usize,
+) -> Result<(), fmt::Error> {
+    let borders = grid.get_split_line(row);
+    let override_str = grid.override_split_lines.get(&row);
+
+    let theres_no_border = borders.iter().all(|l| l.main.is_none());
+    if theres_no_border || widths.is_empty() {
+        return Ok(());
+    }
+
+    if grid.margin.left.size > 0 {
+        repeat_char(f, grid.margin.left.fill, grid.margin.left.size)?;
+    }
+
+    build_split_line_with_override(f, widths, &borders, override_str)?;
+
+    if grid.margin.right.size > 0 {
+        repeat_char(f, grid.margin.right.fill, grid.margin.right.size)?;
+    }
+
+    writeln!(f)?;
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_row_cells(
+    f: &mut std::fmt::Formatter<'_>,
+    row: &[Vec<String>],
+    row_styles: &[Style],
+    widths: &[usize],
+    height: usize,
+    borders: &[BorderLine],
+    margin: &Margin,
+) -> fmt::Result {
+    for line in 0..height {
+        build_line(
+            f,
+            borders,
+            row_styles,
+            row,
+            widths,
+            height,
+            row.len(),
+            line,
+            margin,
+        )?;
+    }
+
+    Ok(())
+}
+
 fn build_line_cell(
     f: &mut std::fmt::Formatter<'_>,
     line_index: usize,
@@ -1150,6 +1276,146 @@ fn line_with_width(
     repeat_char(f, right_indent.fill, right_indent.size)?;
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_line(
+    f: &mut std::fmt::Formatter<'_>,
+    borders: &[BorderLine],
+    row_styles: &[Style],
+    row: &[Vec<String>],
+    widths: &[usize],
+    height: usize,
+    count_columns: usize,
+    line: usize,
+    margin: &Margin,
+) -> fmt::Result {
+    if margin.left.size > 0 {
+        repeat_char(f, margin.left.fill, margin.left.size)?;
+    }
+
+    for col in 0..count_columns {
+        if is_cell_visible(row_styles, col) {
+            write_option(f, borders[col].connector1)?;
+
+            build_line_cell(f, line, &row[col], &row_styles[col], widths[col], height)?;
+        }
+
+        let is_last_cell = col + 1 == count_columns;
+        if is_last_cell {
+            write_option(f, borders[col].connector2)?;
+        }
+    }
+
+    if margin.right.size > 0 {
+        repeat_char(f, margin.right.fill, margin.right.size)?;
+    }
+
+    writeln!(f)?;
+
+    Ok(())
+}
+
+fn build_split_line_with_override(
+    f: &mut std::fmt::Formatter<'_>,
+    widths: &[usize],
+    borders: &[BorderLine],
+    override_str: Option<&String>,
+) -> fmt::Result {
+    let mut skip_chars = 0;
+    if let Some(s) = override_str {
+        let width = split_line_width(widths, borders);
+        skip_chars = write_with_limit(f, s, width)?;
+    }
+
+    build_split_line(f, widths, borders, skip_chars)?;
+    Ok(())
+}
+
+fn build_split_line(
+    f: &mut std::fmt::Formatter<'_>,
+    widths: &[usize],
+    borders: &[BorderLine],
+    mut skip_chars: usize,
+) -> fmt::Result {
+    let theres_no_border = borders.iter().all(|l| l.main.is_none());
+    if theres_no_border || widths.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(left_border) = borders[0].connector1 {
+        write_or_skip(f, left_border, 1, &mut skip_chars)?;
+    }
+
+    for i in 0..widths.len() {
+        if let Some(main) = borders[i].main {
+            write_or_skip(f, main, widths[i], &mut skip_chars)?;
+        }
+
+        if let Some(right_border) = borders[i].connector2 {
+            write_or_skip(f, right_border, 1, &mut skip_chars)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn split_line_width(widths: &[usize], borders: &[BorderLine]) -> usize {
+    let content_width = widths.iter().sum::<usize>();
+    let count_borders = {
+        let left_border = borders.get(0).map_or(0, |b| b.connector1.iter().count());
+        let other_borders = borders
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.connector2.is_some())
+            .count();
+
+        left_border + other_borders
+    };
+
+    content_width + count_borders
+}
+
+fn write_or_skip(
+    f: &mut std::fmt::Formatter<'_>,
+    c: char,
+    width: usize,
+    limit: &mut usize,
+) -> fmt::Result {
+    if *limit >= width {
+        *limit -= width;
+        return Ok(());
+    }
+
+    let n = width - *limit;
+
+    if *limit > 0 {
+        *limit = 0;
+    }
+
+    repeat_char(f, c, n)
+}
+
+fn write_with_limit(
+    f: &mut std::fmt::Formatter<'_>,
+    s: &str,
+    limit: usize,
+) -> Result<usize, fmt::Error> {
+    let mut i = 0;
+    let chars = s.chars().take(limit);
+    for c in chars {
+        write!(f, "{}", c)?;
+        i += 1;
+    }
+
+    Ok(i)
+}
+
+fn write_option<D: Display>(f: &mut std::fmt::Formatter<'_>, text: Option<D>) -> fmt::Result {
+    match text {
+        Some(text) => write!(f, "{}", text),
+        None => Ok(()),
+    }
 }
 
 pub fn strip(s: &str, width: usize) -> String {
@@ -2045,9 +2311,9 @@ impl Container {
         Ok(())
     }
 
-    // fn print_empty_line(&self, f: &mut fmt::Formatter) -> fmt::Result {
-    //     repeat_char(f, ' ', self.width)
-    // }
+    fn print_empty_line(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        repeat_char(f, ' ', self.width)
+    }
 }
 
 impl fmt::Display for Container {
@@ -2073,8 +2339,6 @@ fn build_grid(
         let height = heights[row];
 
         let mut columns = Vec::with_capacity(grid.borders.count_vertical_borders());
-
-        #[allow(clippy::needless_range_loop)]
         for col in 0..grid.count_columns() {
             let width = widths[row][col];
             let lines = contents[row][col].clone();
@@ -2122,13 +2386,8 @@ fn build_grid(
 
     let height = heights.iter().sum::<usize>() + grid.borders.count_horizontal_borders();
 
-    let container = Container::new(row_width, height, ContainerKind::Rows(containers));
-    add_margin(grid, container)
-}
-
-fn add_margin(grid: &Grid, mut container: Container) -> Container {
+    let mut container = Container::new(row_width, height, ContainerKind::Rows(containers));
     if grid.margin.left.size > 0 {
-        let height = container.height;
         container = Container::new(
             container.width + grid.margin.left.size,
             height,
@@ -2145,7 +2404,6 @@ fn add_margin(grid: &Grid, mut container: Container) -> Container {
         );
     }
     if grid.margin.right.size > 0 {
-        let height = container.height;
         container = Container::new(
             container.width + grid.margin.right.size,
             height,
@@ -2162,13 +2420,12 @@ fn add_margin(grid: &Grid, mut container: Container) -> Container {
         );
     }
     if grid.margin.top.size > 0 {
-        let w = container.width;
         container = Container::new(
-            w,
+            container.width,
             container.height + grid.margin.top.size,
             ContainerKind::Rows(vec![
                 Container::new(
-                    w,
+                    container.width,
                     grid.margin.top.size,
                     ContainerKind::Split {
                         c: grid.margin.top.fill,
